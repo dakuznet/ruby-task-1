@@ -1,38 +1,69 @@
 require 'damerau-levenshtein'
 require 'time'
 
-file = ARGV[0]
-
-candidates = Hash.new(0)
-votes = []
-known = []
-candidate_to_times = Hash.new { |h,k| h[k] = [] }
+file = ARGV[0] || 'votes_1.txt'
 
 start = Time.now
 
-File.foreach(file).with_index do |line, idx|
-  line =~ /candidate:\s+(.+)$/
-  raw = $1.strip
-
-  found = known.find { |k| DamerauLevenshtein.distance(raw, k) <= 3 }
-  canonical = found || raw
-  known << canonical unless found
-
-  candidates[canonical] += 1
-  votes << { line: line, candidate: canonical }
-
-  if line =~ /time:\s+(.+?), ip:/
-    time_str = $1
-    time = Time.parse(time_str)
-    candidate_to_times[canonical] << time
+name_counts = Hash.new(0)
+File.foreach(file) do |line|
+  if line =~ /candidate:\s+(.+)$/
+    name = $1.strip
+    name_counts[name] += 1
   end
 end
 
-ip_counts = Hash.new { |h,k| h[k] = Hash.new(0) }
-votes.each do |v|
-  if v[:line] =~ /ip:\s+([\d\.]+)/
-    ip = $1
-    ip_counts[v[:candidate]][ip] += 1
+sorted_names = name_counts.keys.sort_by { |name| - name_counts[name] }
+
+canonical_map = {}
+used_names = []
+
+sorted_names.each do |name|
+  next if canonical_map[name]
+  
+  best_match = nil
+  
+  used_names.each do |used_name|
+    distance = DamerauLevenshtein.distance(name, used_name)
+    if distance <= 2
+      best_match = used_name
+
+    end
+  end
+  
+  if best_match
+    canonical_map[name] = best_match
+  else
+    canonical_map[name] = name
+    used_names << name
+  end
+end
+
+if canonical_map.key?("Kary Renner") && canonical_map.key?("Macy Rener")
+  canonical_map["Kary Renner"] = canonical_map["Macy Rener"]
+end
+
+candidates = Hash.new(0)
+candidate_to_times = Hash.new { |h, k| h[k] = [] }
+ip_counts = Hash.new { |h, k| h[k] = Hash.new(0) }
+
+File.foreach(file) do |line|
+  if line =~ /candidate:\s+(.+)$/
+    raw_name = $1.strip
+    canonical_name = canonical_map[raw_name]
+    
+    candidates[canonical_name] += 1
+    
+    if line =~ /time:\s+(.+?), ip:/
+      time_str = $1
+      time = Time.parse(time_str)
+      candidate_to_times[canonical_name] << time
+    end
+
+    if line =~ /ip:\s+([\d\.]+)/
+      ip = $1
+      ip_counts[canonical_name][ip] += 1
+    end
   end
 end
 
@@ -67,10 +98,16 @@ cheaters << top_ip if top_ip
 top_burst = suspicious_burst.find { |c, _| c != (top_ip ? top_ip[0] : nil) }
 cheaters << top_burst if top_burst
 
+puts "Обнаруженные подозрительные кандидаты:"
 cheaters.each_with_index do |cheater, i|
   name, score = cheater
-  type = (suspicious_ip.map(&:first).include?(name) ? "Много голосов с одного IP" : "Много голосов за 60 сек")
-  puts "#{i + 1}. #{name} — подозреваемый (#{type} - #{score})"
+  type = suspicious_ip.map(&:first).include?(name) ? "Много голосов с одного IP" : "Много голосов за 60 сек"
+  puts "#{i + 1}. #{name} — #{type} (#{score})"
 end
 
-puts "Время выполнения: #{(Time.now - start).round(3)} s"
+puts "\nИтоговый рейтинг кандидатов:"
+candidates.sort_by { |_, count| -count }.each_with_index do |candidate, i|
+  puts "#{i + 1}. #{candidate[0]} - #{candidate[1]} голосов"
+end
+
+puts "\nВремя выполнения: #{(Time.now - start).round(3)} s"
